@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import re
 import uuid
+import time
 
 # Limpiar completamente el caché al inicio
 st.cache_data.clear()
@@ -19,6 +20,13 @@ st.set_page_config(
 if 'session_id' not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+# Estado para gestionar notificaciones
+if 'notificaciones' not in st.session_state:
+    st.session_state.notificaciones = []
+
+if 'mostrar_notificaciones' not in st.session_state:
+    st.session_state.mostrar_notificaciones = False
+
 def format_date(date_str):
     """
     Formatea una fecha en el formato deseado (dd/mm/aa).
@@ -26,7 +34,6 @@ def format_date(date_str):
     """
     if date_str == 'No disponible':
         return date_str
-        
         
     try:
         # Intentar varios formatos de fecha posibles
@@ -103,6 +110,9 @@ def calcular_caducidad(row):
         elif dias_restantes <= 30:
             mensaje = f"¡FALTAN {dias_restantes} DÍAS PARA CADUCAR!"
             estilo = "color: #f39c12; font-weight: bold;"
+        elif dias_restantes <= 180:  # Alerta a 6 meses (180 días)
+            mensaje = f"ALERTA: FALTAN {dias_restantes} DÍAS (6 MESES O MENOS)"
+            estilo = "color: #3498db; font-weight: bold;"
         else:
             mensaje = f"VIGENTE - FALTAN {dias_restantes} DÍAS"
             estilo = "color: #2ecc71; font-weight: bold;"
@@ -137,6 +147,8 @@ def render_caducidad(caducidad_info):
         icono = "⚠️"  # Caducado
     elif caducidad_info.get('dias_restantes', 0) <= 30:
         icono = "⏳"  # Próximo a caducar
+    elif caducidad_info.get('dias_restantes', 0) <= 180:
+        icono = "🔔"  # Alerta a 6 meses
     else:
         icono = "✅"  # Vigente
     
@@ -149,7 +161,7 @@ def render_caducidad(caducidad_info):
     return html
 
 # Ruta al archivo Excel de HSA
-EXCEL_PATH = 'PRUEBA HSA.xlsx'  # Ajusta esta ruta según necesites
+EXCEL_PATH = r'PRUEBA HSA.xlsx'  # Ajusta esta ruta según necesites
 
 # Función para cargar datos desde el Excel
 def cargar_datos():
@@ -186,6 +198,61 @@ def cargar_datos():
         st.error(f"❌ Error al cargar el archivo Excel: {str(e)}")
         st.info(f"ℹ️ Verifica que el archivo exista en la ruta: {EXCEL_PATH}")
         return pd.DataFrame()
+
+# Función para generar notificaciones
+def generar_notificaciones(df):
+    notificaciones = []
+    
+    for _, row in df.iterrows():
+        if isinstance(row['info_caducidad'], dict):
+            dias_restantes = row['info_caducidad'].get('dias_restantes', 0)
+            
+            # Si el expediente está en el rango de 175-185 días (aproximadamente 6 meses)
+            # Esto evita que la misma notificación aparezca todos los días
+            if 175 <= dias_restantes <= 185:
+                notificacion = {
+                    'expediente': row['EXPEDIENTE'],
+                    'asesor': row['ASESOR'],
+                    'tema': row['TEMA'],
+                    'dias_restantes': dias_restantes,
+                    'fecha_caducidad': row['info_caducidad']['fecha']
+                }
+                notificaciones.append(notificacion)
+    
+    return notificaciones
+
+# Función para mostrar el centro de notificaciones
+def mostrar_centro_notificaciones():
+    if not st.session_state.notificaciones:
+        st.info("📭 No hay notificaciones pendientes")
+        return
+    
+    st.markdown("<h4>📬 Centro de Notificaciones</h4>", unsafe_allow_html=True)
+    
+    for i, notif in enumerate(st.session_state.notificaciones):
+        with st.container():
+            col1, col2, col3 = st.columns([3, 1, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div style="background-color: #f0f7ff; padding: 10px; border-radius: 5px; border-left: 3px solid #3498db;">
+                    <div><strong>🔔 Alerta de caducidad a 6 meses</strong></div>
+                    <div>Expediente: <strong>{notif['expediente']}</strong></div>
+                    <div>Asesor: {notif['asesor']}</div>
+                    <div>Tema: {notif['tema']}</div>
+                    <div>Días restantes: <strong>{notif['dias_restantes']}</strong></div>
+                    <div>Fecha de caducidad: {notif['fecha_caducidad']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                if st.button("Marcar como leída", key=f"marcar_{i}"):
+                    st.session_state.notificaciones.pop(i)
+                    st.experimental_rerun()
+    
+    if st.button("Marcar todas como leídas"):
+        st.session_state.notificaciones = []
+        st.experimental_rerun()
 
 # Estilos CSS personalizados
 st.markdown("""
@@ -257,9 +324,13 @@ st.markdown("""
             background-color: #d4f7e6;
             color: #2ecc71;
         }
+        .seis-meses {
+            background-color: #d4e6f7;
+            color: #3498db;
+        }
         .summary-container {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr); /* Ahora 5 columnas para incluir la nueva categoría */
             gap: 15px;
             margin-bottom: 20px;
         }
@@ -279,6 +350,9 @@ st.markdown("""
         .summary-proximos {
             border-top: 4px solid #f39c12;
         }
+        .summary-seis-meses {
+            border-top: 4px solid #3498db;
+        }
         .summary-vigentes {
             border-top: 4px solid #2ecc71;
         }
@@ -287,16 +361,64 @@ st.markdown("""
             font-weight: bold;
             margin: 10px 0;
         }
+        .notification-badge {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 20px;
+            height: 20px;
+            background-color: #e74c3c;
+            color: white;
+            border-radius: 50%;
+            font-size: 12px;
+            margin-left: 5px;
+        }
+        .notification-bell {
+            cursor: pointer;
+            color: #1f77b4;
+            font-size: 24px;
+            margin-right: 10px;
+        }
+        .notification-container {
+            position: fixed;
+            top: 60px;
+            right: 20px;
+            width: 400px;
+            max-height: 500px;
+            overflow-y: auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1000;
+            padding: 20px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
-# Título principal 
-st.markdown("""
-    <div class="title-container">
-        <h1>⏱️ Alertas de Caducidad HSA</h1>
-        <p style='font-size: 18px;'>Sistema de seguimiento de expedientes y fechas límite</p>
-    </div>
-""", unsafe_allow_html=True)
+# Título principal con campana de notificaciones
+col1, col2 = st.columns([6, 1])
+with col1:
+    st.markdown("""
+        <div class="title-container">
+            <h1>⏱️ Alertas de Caducidad HSA</h1>
+            <p style='font-size: 18px;'>Sistema de seguimiento de expedientes y fechas límite</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    # Botón de notificaciones
+    num_notificaciones = len(st.session_state.notificaciones)
+    if num_notificaciones > 0:
+        if st.button(f"🔔 ({num_notificaciones})"):
+            st.session_state.mostrar_notificaciones = not st.session_state.mostrar_notificaciones
+    else:
+        if st.button("🔔"):
+            st.session_state.mostrar_notificaciones = not st.session_state.mostrar_notificaciones
+
+# Mostrar centro de notificaciones si está activado
+if st.session_state.mostrar_notificaciones:
+    with st.container():
+        mostrar_centro_notificaciones()
 
 # Cargar datos
 df = cargar_datos()
@@ -305,11 +427,18 @@ df = cargar_datos()
 df_procesado = df.copy()
 df_procesado['info_caducidad'] = df_procesado.apply(calcular_caducidad, axis=1)
 
+# Generar notificaciones para expedientes a 6 meses
+nuevas_notificaciones = generar_notificaciones(df_procesado)
+for notif in nuevas_notificaciones:
+    # Evitar duplicados
+    if notif not in st.session_state.notificaciones:
+        st.session_state.notificaciones.append(notif)
+
 # Filtros en la barra lateral
 st.sidebar.header("🔍 Filtros")
 
 # Filtro por estado de caducidad
-estados_caducidad = ["Todos", "Caducados", "Caducan hoy", "Próximos a caducar (30 días)", "Vigentes", "No Aplica"]
+estados_caducidad = ["Todos", "Caducados", "Caducan hoy", "Próximos a caducar (30 días)", "A 6 meses de caducar", "Vigentes", "No Aplica"]
 estado_seleccionado = st.sidebar.selectbox(
     "Estado de caducidad:",
     estados_caducidad,
@@ -352,8 +481,10 @@ if estado_seleccionado != "Todos":
             return dias_restantes == 0
         elif estado_seleccionado == "Próximos a caducar (30 días)":
             return 0 < dias_restantes <= 30
+        elif estado_seleccionado == "A 6 meses de caducar":
+            return 30 < dias_restantes <= 180
         elif estado_seleccionado == "Vigentes":
-            return dias_restantes > 30 and row['info_caducidad'].get('mensaje') != 'NO APLICA'
+            return dias_restantes > 180 and row['info_caducidad'].get('mensaje') != 'NO APLICA'
         return True
         
     df_filtrado = df_filtrado[df_filtrado.apply(filtrar_por_estado, axis=1)]
@@ -371,6 +502,7 @@ def contar_por_estado(df):
     caducados = 0
     hoy = 0
     proximos = 0
+    seis_meses = 0
     vigentes = 0
     no_aplica = 0
     
@@ -387,6 +519,8 @@ def contar_por_estado(df):
                 hoy += 1
             elif dias <= 30:
                 proximos += 1
+            elif dias <= 180:
+                seis_meses += 1
             else:
                 vigentes += 1
     
@@ -394,6 +528,7 @@ def contar_por_estado(df):
         'caducados': caducados,
         'hoy': hoy,
         'proximos': proximos,
+        'seis_meses': seis_meses,
         'vigentes': vigentes,
         'no_aplica': no_aplica,
         'total': len(df)
@@ -420,9 +555,14 @@ st.markdown(f"""
             <div>de {estadisticas['hoy']} totales</div>
         </div>
         <div class="summary-card summary-proximos">
-            <h4>⏳ Próximos</h4>
+            <h4>⏳ Próximos (30 días)</h4>
             <div class="summary-number">{estadisticas_filtradas['proximos']}</div>
             <div>de {estadisticas['proximos']} totales</div>
+        </div>
+        <div class="summary-card summary-seis-meses">
+            <h4>🔔 A 6 meses</h4>
+            <div class="summary-number">{estadisticas_filtradas['seis_meses']}</div>
+            <div>de {estadisticas['seis_meses']} totales</div>
         </div>
         <div class="summary-card summary-vigentes">
             <h4>✅ Vigentes</h4>
@@ -479,6 +619,8 @@ else:
                             estado_clase = "hoy"
                         elif dias <= 30:
                             estado_clase = "proximo"
+                        elif dias <= 180:
+                            estado_clase = "seis-meses"
                 
                 # Extraer fecha de reparto (comprobando diferentes posibles nombres de columna)
                 fecha_reparto = None
